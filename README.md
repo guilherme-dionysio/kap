@@ -42,6 +42,90 @@ val checkout: CheckoutResult = Async {
 
 **130ms virtual time** (vs 460ms sequential) — verified in [`ConcurrencyProofTest.kt`](kap-core/src/jvmTest/kotlin/applicative/ConcurrencyProofTest.kt).
 
+### Wait — `::CheckoutResult` is just a function
+
+If you've never seen `::CheckoutResult` before, here's the key insight: **a Kotlin data class constructor *is* a function**.
+
+```kotlin
+data class Greeting(val text: String, val target: String)
+
+// ::Greeting has type (String, String) -> Greeting
+// So lift2(::Greeting) works — it wraps that function for parallel execution.
+```
+
+But `lift` works with **any** function, not just constructors:
+
+```kotlin
+// A regular function reference:
+fun buildSummary(name: String, items: Int): String = "$name has $items items"
+
+val summary: String = Async {
+    lift2(::buildSummary)
+        .ap { fetchName() }   // parallel
+        .ap { fetchItemCount() }
+}
+
+// A stored lambda:
+val greet: (String, Int) -> String = { name, age -> "Hi $name, you're $age" }
+
+val greeting: String = Async {
+    lift2(greet)
+        .ap { fetchName() }
+        .ap { fetchAge() }
+}
+```
+
+Constructors are just the most common case because they give you compile-time parameter order safety for free — each slot expects a specific type, so swapping two `.ap` lines is a compiler error.
+
+> All code examples on this page are compilable and verified in [`readme-examples`](examples/readme-examples/).
+
+### `Computation` is a description, not an execution
+
+Nothing runs until you wrap it in `Async {}`:
+
+```kotlin
+// This builds a plan — nothing runs yet
+val plan: Computation<Dashboard> = lift3(::Dashboard)
+    .ap { fetchUser() }     // NOT executed
+    .ap { fetchCart() }     // NOT executed
+    .ap { fetchPromos() }   // NOT executed
+
+// NOW it runs — all three in parallel
+val result: Dashboard = Async { plan }
+println(result) // Dashboard(user=Alice, cart=3 items, promos=SAVE20)
+```
+
+This means you can build computation graphs, store them, pass them around, and compose them — all without triggering any side effects. Execution only happens at the `Async` boundary.
+
+### All `val`, no `null`, no `!!`
+
+With raw coroutines, parallel results force you into mutable variables or nullable types:
+
+```kotlin
+// Raw coroutines: vars and nulls
+var user: UserProfile? = null
+var cart: ShoppingCart? = null
+coroutineScope {
+    launch { user = fetchUser() }
+    launch { cart = fetchCart() }
+}
+// Now you need: user!! and cart!! everywhere — or worse, lateinit var
+val dashboard = Dashboard(user!!, cart!!)
+```
+
+With KAP, the constructor receives everything at once. Every field is `val`. Nothing is ever `null`:
+
+```kotlin
+// KAP: complete construction, all val, no nulls
+val dashboard: Dashboard = Async {
+    lift2(::Dashboard)
+        .ap { fetchUser() }
+        .ap { fetchCart() }
+}
+```
+
+This isn't just style — it's **correctness**. Your data classes can have all `val` fields with no default values, because KAP guarantees the constructor is called with all arguments at once. No partial construction. No temporal coupling.
+
 But what does this replace?
 
 ---
@@ -148,6 +232,95 @@ t=90ms  ─── generateConfirm ─┐
 t=90ms  ─── sendEmail ───────┘─ phase 5 (parallel)
 t=130ms ─── done
 ```
+
+---
+
+## When Phase 2 Depends on Phase 1: `flatMap`
+
+The checkout above uses `.followedBy` for barriers — phase 2 doesn't need phase 1's *values*, just needs it to finish. But what if phase 2 **uses** phase 1's results?
+
+**Raw Coroutines — three separate `coroutineScope` blocks, manual variable threading:**
+
+```kotlin
+// Phase 1: fetch user context (3 calls in parallel)
+val ctx = coroutineScope {
+    val dProfile = async { fetchProfile(userId) }
+    val dPrefs   = async { fetchPreferences(userId) }
+    val dTier    = async { fetchLoyaltyTier(userId) }
+    UserContext(dProfile.await(), dPrefs.await(), dTier.await())
+}
+// Phase 2: fetch personalized content USING ctx (4 calls in parallel)
+val enriched = coroutineScope {
+    val dRecs     = async { fetchRecommendations(ctx.profile) }
+    val dPromos   = async { fetchPromotions(ctx.tier) }
+    val dTrending = async { fetchTrending(ctx.prefs) }
+    val dHistory  = async { fetchHistory(ctx.profile) }
+    EnrichedContent(dRecs.await(), dPromos.await(), dTrending.await(), dHistory.await())
+}
+// Phase 3: finalize USING both ctx and enriched (2 calls in parallel)
+val dashboard = coroutineScope {
+    val dLayout = async { renderLayout(ctx, enriched) }
+    val dTrack  = async { trackAnalytics(ctx, enriched) }
+    FinalDashboard(dLayout.await(), dTrack.await())
+}
+// 3 separate coroutineScope blocks. ctx and enriched threaded manually.
+// Where are the phase boundaries? Which calls depend on what? Invisible.
+```
+
+**KAP — single expression, dependencies are the structure:**
+
+```kotlin
+val dashboard: FinalDashboard = Async {
+    lift3(::UserContext)
+        .ap { fetchProfile(userId) }         // ┐
+        .ap { fetchPreferences(userId) }     // ├─ phase 1 (parallel)
+        .ap { fetchLoyaltyTier(userId) }     // ┘
+    .flatMap { ctx ->                        // ── barrier: phase 2 NEEDS ctx
+        lift4(::EnrichedContent)
+            .ap { fetchRecommendations(ctx.profile) }  // ┐
+            .ap { fetchPromotions(ctx.tier) }           // ├─ phase 2 (parallel)
+            .ap { fetchTrending(ctx.prefs) }            // │
+            .ap { fetchHistory(ctx.profile) }           // ┘
+        .flatMap { enriched ->                          // ── barrier: phase 3 NEEDS enriched
+            lift2(::FinalDashboard)
+                .ap { renderLayout(ctx, enriched) }     // ┐ phase 3 (parallel)
+                .ap { trackAnalytics(ctx, enriched) }   // ┘
+        }
+    }
+}
+// One expression. Phase 2 can't start without ctx. Phase 3 can't start without enriched.
+// The dependency graph IS the code shape.
+```
+
+```
+Execution timeline:
+
+t=0ms   ─── fetchProfile ──────┐
+t=0ms   ─── fetchPreferences ──├─ phase 1 (parallel, all 3)
+t=0ms   ─── fetchLoyaltyTier ──┘
+t=50ms  ─── flatMap { ctx -> }  ── barrier, ctx available
+t=50ms  ─── fetchRecommendations ──┐
+t=50ms  ─── fetchPromotions ───────├─ phase 2 (parallel, all 4)
+t=50ms  ─── fetchTrending ─────────┤
+t=50ms  ─── fetchHistory ──────────┘
+t=90ms  ─── flatMap { enriched -> } ── barrier, enriched available
+t=90ms  ─── renderLayout ──┐
+t=90ms  ─── trackAnalytics ┘─ phase 3 (parallel, both)
+t=115ms ─── FinalDashboard ready
+```
+
+---
+
+## What Only KAP Can Do
+
+These features solve real problems that neither raw coroutines nor Arrow address. Each links to a detailed section below:
+
+- **Partial failure tolerance** — `.settled()` wraps individual branches in `Result` so one failure doesn't cancel siblings. Raw coroutines cancel everything; Arrow has no equivalent. → [Section 7](#7-partial-failure-tolerance-with-settled-kap-core)
+- **Timeout with parallel fallback** — `timeoutRace` starts both primary and fallback at t=0. Raw coroutines wait for the timeout *then* start the fallback. **6x faster in benchmarks.** → [Section 8](#8-timeout-with-parallel-fallback-kap-resilience)
+- **Quorum consensus** — `raceQuorum(2, a, b, c)` returns the 2 fastest successes, cancels the rest. No primitive for this anywhere. → [Section 9](#9-quorum-consensus--n-of-m-successes-kap-resilience)
+- **Compile-time argument order safety** — Swap two `.ap` lines of the same type → compiler error. Raw coroutines and Arrow use positional args — silent bugs. → [Section 11](#11-compile-time-argument-order-safety-kap-core)
+- **Success-only memoization** — `.memoizeOnSuccess()` caches successes but retries failures. No manual `Mutex` + double-checked locking. → [Section 12](#12-memoization-with-success-only-caching-kap-core)
+- **Parallel validation up to 22 fields** — `zipV` collects every error in parallel. Raw coroutines can't; Arrow's `zipOrAccumulate` stops at 9. → [Section 1](#1-parallel-validation--collect-every-error-kap-arrow)
 
 ---
 
@@ -654,7 +827,7 @@ bracketCase(
     use = { tx -> Computation { tx.execute("INSERT ...") } },
     release = { tx, case ->
         when (case) {
-            is ExitCase.Completed -> tx.commit()
+            is ExitCase.Completed<*> -> tx.commit()
             else -> tx.rollback()
         }
         tx.close()
@@ -804,7 +977,7 @@ val dashboard = Async {
     lift3 { user: Result<User>, cart: Cart, config: Config ->
         Dashboard(user.getOrDefault(User.anonymous()), cart, config)
     }
-        .ap { fetchUser().settled() }  // won't cancel siblings on failure
+        .ap(Computation { fetchUser() }.settled())  // won't cancel siblings on failure
         .ap { fetchCart() }
         .ap { fetchConfig() }
 }
@@ -1264,107 +1437,193 @@ No logging framework coupled. Bring your own.
 
 ## Empirical Data
 
-All claims backed by **32 JMH benchmark groups** (2 forks x 5 measurement iterations each) and deterministic virtual-time proofs. No flaky timing assertions — `runTest` + `currentTime` gives provably correct results.
+All claims backed by **119 JMH benchmarks** across 3 suites (2 forks x 5 measurement iterations each) and deterministic virtual-time proofs. No flaky timing assertions — `runTest` + `currentTime` gives provably correct results.
 
-> **Environment:** JDK 21.0.9 (Amazon Corretto), OpenJDK 64-Bit Server VM, macOS. JMH 1.37 with Compiler Blackholes.
+> **Environment:** JDK 21 (Amazon Corretto), Ubuntu 24.04 (GitHub Actions CI). JMH 1.37.
+> Results auto-tracked in [`gh-pages`](https://damian-rafael-lattenero.github.io/coroutines-applicatives/benchmarks/) with regression alerts on every push.
 
-### JMH Benchmarks (`./gradlew :benchmarks:jmh`)
+### kap-core: KAP vs Raw Coroutines vs Arrow
 
 #### 1. Simple Parallel — 5 calls @ 50ms each
 
 | Approach | ms/op | vs Sequential | Overhead vs raw |
 |---|---|---|---|
-| Sequential baseline | 267.6 | 1x | — |
-| Raw coroutines (`async/await`) | 53.9 | **5.0x** | — |
-| Arrow (`parZip`) | 54.0 | **5.0x** | — |
-| **KAP** (`lift+ap`) | **54.1** | **4.9x** | **+0.2ms** |
-| **KAP** (`liftA5`) | **53.9** | **5.0x** | **+0.0ms** |
-
-> **Verdict:** All three parallel approaches deliver the theoretical 5x speedup. The library matches raw coroutines to within the margin of error.
+| Sequential baseline | 250.90 | 1x | — |
+| Raw coroutines (`async/await`) | 50.27 | **5.0x** | — |
+| Arrow (`parZip`) | 50.33 | **5.0x** | +0.06ms |
+| **KAP** (`lift+ap`) | **50.32** | **5.0x** | **+0.05ms** |
+| **KAP** (`liftA5`) | **50.31** | **5.0x** | **+0.04ms** |
 
 #### 2. Framework Overhead — trivial compute, no I/O
 
-| Approach | Arity 3 | Arity 5 | Arity 9 | Arity 15 |
-|---|---|---|---|---|
-| Raw coroutines | 0.001ms | — | 0.001ms | — |
-| **KAP** (`lift+ap`) | **0.001ms** | — | **0.002ms** | **0.003ms** |
-| **KAP** (`liftA`) | **0.001ms** | **0.001ms** | — | — |
-| Arrow (`parZip`) | 0.010ms | — | 0.020ms | — |
+| Approach | Arity 3 | Arity 9 | Arity 15 |
+|---|---|---|---|
+| Raw coroutines | <0.01ms | <0.01ms | 0.01ms |
+| **KAP** (`lift+ap`) | **<0.01ms** | **<0.01ms** | **0.01ms** |
+| **KAP** (`liftA3/5`) | **<0.01ms** | — | — |
+| Arrow (`parZip`) | 0.02ms | 0.03ms | — |
 
-> **Verdict:** The library's overhead is **indistinguishable from raw coroutines** — both measure ~1us at arity 3. Arrow's `parZip` is 7-10x higher in pure overhead, though still negligible for real I/O workloads.
+> KAP overhead is **indistinguishable from raw coroutines**. Arrow's `parZip` is 2-3x higher in pure overhead but still negligible for real I/O.
 
-#### 3. Multi-Phase Checkout — 9 calls, 4 phases
+#### 3. Multi-Phase — 9 calls, 4 phases
 
 | Approach | ms/op | Flat code? | vs Sequential |
 |---|---|---|---|
-| Sequential baseline | 441.7 | Yes | 1x |
-| Raw coroutines (nested blocks) | 195.1 | No — 4 async/await groups | **2.3x** |
-| Arrow (nested `parZip`) | 195.3 | No — 4 nested `parZip` blocks | **2.3x** |
-| **KAP** (`lift+ap+followedBy`) | **194.6** | **Yes — single flat chain** | **2.3x** |
+| Sequential baseline | 411.54 | Yes | 1x |
+| Raw coroutines (nested blocks) | 180.85 | No | **2.3x** |
+| Arrow (nested `parZip`) | 181.06 | No | **2.3x** |
+| **KAP** (`lift+ap+followedBy`) | **180.98** | **Yes** | **2.3x** |
 
-> **Verdict:** Identical wall-clock time. The crucial difference: raw coroutines and Arrow require nested blocks per phase. KAP keeps a single flat chain where `.followedBy` visually marks each barrier. Same performance, radically better readability.
+> Identical wall-clock. KAP keeps a single flat chain; raw and Arrow need nested blocks per phase.
 
-#### 4. Parallel Validation — 4 validators @ 40ms each
+#### 4. Concurrency — traverse, settle, flow
+
+| Benchmark | KAP | Raw Coroutines | Notes |
+|---|---|---|---|
+| `traverse` 20 items unbounded | 30.21ms | 30.19ms | All parallel — theoretical 30ms |
+| `traverse` 20 items, concurrency 5 | 120.73ms | 120.73ms | 4 batches — theoretical 120ms |
+| `traverseSettled` 10 items, all pass | 30.22ms | 30.20ms | Like traverse but never cancels |
+| `traverseSettled` 10 items, half fail | 30.25ms | — | Collects failures without cancelling |
+| `flow.mapComputation` c=5, 10 items | 60.53ms | 60.59ms | Bounded parallel flow processing |
+| `flow.mapComputationOrdered` c=5 | 60.57ms | — | Preserves emission order |
+| `flow.mapComputation` sequential | 301.60ms | — | 10 x 30ms sequentially |
+
+#### 5. Memoization, orElse, firstSuccessOf
+
+| Benchmark | KAP | Raw Coroutines | Notes |
+|---|---|---|---|
+| `memoize` cold | <0.01ms | <0.01ms | First call overhead |
+| `memoize` warm | <0.01ms | — | Subsequent calls — cached |
+| `memoizeOnSuccess` cold | <0.01ms | — | Only caches success |
+| `memoizeOnSuccess` failure retry | <0.01ms | — | Retries on failure |
+| `orElse` chain (3 fallbacks) | 30.30ms | <0.01ms | 2 failures @ 10ms + 1 success @ 10ms |
+| `firstSuccessOf` 5 candidates | 30.31ms | <0.01ms | Parallel race to first success |
+
+#### 6. Race
+
+| Benchmark | KAP | Raw Coroutines | Arrow |
+|---|---|---|---|
+| `race` (50ms vs 100ms) | **50.40ms** | 100.34ms | 50.51ms |
+| `raceEither` (heterogeneous) | 30.29ms | 30.26ms | 30.37ms |
+
+> KAP and Arrow cancel the loser automatically. Raw `select` takes the slower path in this benchmark.
+
+### kap-resilience: KAP vs Raw Coroutines
+
+#### 7. Retry & Schedule
+
+| Benchmark | KAP | Raw Coroutines | Notes |
+|---|---|---|---|
+| `retry` (recurs schedule) | 30.21ms | 120.70ms | KAP: declarative schedule with backoff. Raw: manual loop |
+| `retry` (exponential jittered) | 30.21ms | — | Same performance — schedule is free |
+| `schedule.fold` | <0.01ms | — | Schedule composition overhead is zero |
+
+> KAP's `Schedule` abstraction delivers **4x faster** retry than naive manual loops because it controls the backoff precisely.
+
+#### 8. Timeout & TimeoutRace
+
+| Benchmark | KAP | Raw Coroutines | Notes |
+|---|---|---|---|
+| `timeout` with default | 100.47ms | 100.39ms | Wait 100ms, cancel, use default |
+| `timeoutRace` primary wins | **30.34ms** | 180.55ms | KAP runs primary+fallback in parallel |
+| `timeoutRace` fallback wins | **30.34ms** | 80.55ms | Fallback faster, primary cancelled |
+| `timeoutRace` vs plain timeout | 80.57ms | — | Combined timeout+race pattern |
+
+> `timeoutRace` runs primary and fallback **in parallel** instead of sequentially. Raw equivalent needs manual `select` + cancellation.
+
+#### 9. Bracket & Resource Safety
+
+| Benchmark | KAP | Raw Coroutines | Notes |
+|---|---|---|---|
+| `bracket` overhead | <0.01ms | <0.01ms | Zero-cost acquire/use/release |
+| `bracket` latency (parallel use) | 50.34ms | 50.28ms | Parallel inside bracket — no penalty |
+| `bracketCase` overhead | <0.01ms | <0.01ms | Outcome-aware variant |
+| `bracketCase` latency | 60.46ms | — | With outcome dispatch in release |
+| `guarantee` overhead | <0.01ms | <0.01ms | Finalizer-only pattern |
+| `guaranteeCase` overhead | <0.01ms | — | Outcome-aware guarantee |
+
+#### 10. CircuitBreaker
+
+| Benchmark | KAP | Raw Coroutines | Notes |
+|---|---|---|---|
+| Closed (happy path) overhead | <0.01ms | <0.01ms | Mutex check is free |
+| Closed latency | 50.27ms | — | Normal operation with state tracking |
+| Half-open probe | 2.07ms | — | Single probe let through |
+
+#### 11. RaceQuorum & Resource
+
+| Benchmark | KAP | Raw Coroutines | Notes |
+|---|---|---|---|
+| `raceQuorum` 2-of-3 overhead | <0.01ms | — | Quorum overhead is zero |
+| `raceQuorum` 2-of-5 | 40.26ms | 40.24ms | Wait for 2nd result, cancel rest |
+| `raceQuorum` 3-of-5 | 50.27ms | — | Wait for 3rd result |
+| `resource.zip` latency (3 resources) | 100.48ms | — | Parallel acquire, guaranteed release |
+| `resource.zip` overhead | <0.01ms | <0.01ms | Resource abstraction is free |
+
+### kap-arrow: KAP vs Arrow Validated
+
+#### 12. Parallel Validation — 4 validators @ 40ms each
 
 | Approach | ms/op | Collects all errors? | Parallel? | vs Sequential |
 |---|---|---|---|---|
-| Sequential | 173.8 | Yes | No | 1x |
-| Raw coroutines | N/A | **No** (cancels siblings) | Yes | — |
-| Arrow (`zipOrAccumulate`) | 44.2 | Yes | Yes | **3.9x** |
-| **KAP** (`zipV`) | **43.9** | **Yes** | **Yes** | **4.0x** |
+| Sequential | 160.65 | Yes | No | 1x |
+| Raw coroutines | N/A | **No** | Yes | — |
+| Arrow (`zipOrAccumulate`) all pass | 40.32 | Yes | Yes | **4.0x** |
+| Arrow (`zipOrAccumulate`) all fail | 40.36 | Yes | Yes | **4.0x** |
+| **KAP** (`zipV`) all pass | **40.28** | **Yes** | **Yes** | **4.0x** |
+| **KAP** (`zipV`) all fail | **40.28** | **Yes** | **Yes** | **4.0x** |
+| **KAP** (`zipV`) mixed | **40.28** | **Yes** | **Yes** | **4.0x** |
 
-> **Verdict:** Both KAP and Arrow deliver ~4x speedup while collecting every error. Raw coroutines cannot even compete — they'd need `supervisorScope` + manual `Result` wrapping. KAP scales to **22 validators** (vs Arrow's 9-arg limit).
+> KAP and Arrow are identical in performance. KAP scales to 22 validators; Arrow stops at 9.
 
-#### 5. Resilience Stack — retry, timeout, race
+#### 13. Phased Validation (flatMapV)
 
-| Benchmark | What it tests | ms/op | Analysis |
+| Approach | ms/op | Notes |
+|---|---|---|
+| Arrow (phased validation) | 80.37 | Sequential phases of parallel validation |
+| **KAP** (`flatMapV`) | **80.52** | Same pattern via `flatMapV` chaining |
+
+#### 14. Validated Traverse
+
+| Benchmark | ms/op | Notes |
+|---|---|---|
+| `traverseV` 10 items, all pass | 30.22 | Parallel validated traverse |
+| `traverseV` 10 items, half fail | 30.21 | Collects errors, no cancellation |
+| `traverseV` bounded 20, c=5, pass | 120.73 | With concurrency limit |
+| `traverseV` bounded 20, c=5, half fail | 120.79 | Bounded + error accumulation |
+
+#### 15. Error Handling Overhead
+
+| Benchmark | KAP | Arrow | Raw Coroutines |
 |---|---|---|---|
-| `retry_succeed_first` | `retry(schedule)` on 30ms call, succeeds immediately | 33.5 | **3.5ms overhead** — Schedule evaluation is essentially free |
-| `timeout_with_default` | `timeout(100ms, default)` on 200ms call | 104.5 | Fires at exactly **100ms**. 4.5ms margin is coroutine scheduling jitter |
-| `race_two` | `race(primary@100ms, replica@50ms)` | 53.9 | Winner at **~50ms**, loser cancelled. 3.9ms overhead |
-
-#### 6. Collection Processing — traverse with bounded concurrency
-
-| Benchmark | Concurrency | ms/op | Theoretical | Overhead |
-|---|---|---|---|---|
-| `traverse_unbounded_20` | all 20 | 33.4 | 30ms | **+3.4ms** |
-| `traverse_bounded_20_concurrency5` | 5 | 134.4 | 120ms (4 batches) | **+14.4ms** |
-
-#### 7. Additional Benchmarks
-
-| Category | Benchmark | ms/op | Notes |
-|---|---|---|---|
-| **Bracket** | `bracket_overhead` | ~10^-4 | Resource safety adds zero measurable cost |
-| **Bracket** | `bracket_latency_with_parallel` | 53.9 | Parallel inside bracket — no penalty |
-| **BracketCase** | `bracketCase_latency` | 66.1 | Outcome-aware release with parallel use |
-| **CircuitBreaker** | `circuitBreaker_closed_overhead` | ~10^-4 | Mutex check on happy path is free |
-| **computation{}** | `builder_overhead` | ~10^-4 | Imperative DSL adds no measurable cost |
-| **flatMap** | `chain_3_latency` | 161.1 | Sequential 3-step chain — expected |
-| **orElse** | `chain_3_latency` | 36.1 | 2 failures + 1 success fallback |
-| **timeoutRace** | `parallel_fallback` | 34.0 | **2.6x faster** than sequential timeout |
-| **timeout** | `sequential_fallback` | 87.2 | Wait for timeout, then start fallback |
-| **raceEither** | `latency` | 34.0 | Heterogeneous race — same speed |
-| **traverseV** | `10_items_all_pass` | 33.8 | Validated traverse, no overhead vs regular |
-| **Schedule** | `jittered_exponential` | 33.8 | Real retry with jitter — minimal overhead |
-| **Resource** | `resource_zip` | 107.3 | Zip 3 resources with parallel use |
+| `attempt` success | <0.01ms | <0.01ms | <0.01ms |
+| `attempt` failure | <0.01ms | — | <0.01ms |
+| `catching` success | <0.01ms | — | — |
+| `catching` failure | <0.01ms | — | — |
+| `ensureV` pass | <0.01ms | — | — |
+| `ensureV` fail | <0.01ms | — | — |
+| `validated` builder | <0.01ms | — | — |
 
 ### Comparison Summary
 
 | Dimension | Raw Coroutines | Arrow | KAP |
 |---|---|---|---|
-| **Framework overhead** (arity 3) | 0.001ms | 0.010ms | **0.001ms** |
-| **Framework overhead** (arity 9) | 0.001ms | 0.020ms | **0.002ms** |
-| **Simple parallel** (5 x 50ms) | 53.9ms | 54.0ms | **53.9ms** |
-| **Multi-phase** (9 calls, 4 phases) | 195.1ms | 195.3ms | **194.6ms** |
-| **Validation** (4 x 40ms) | N/A | 44.2ms | **43.9ms** |
-| **Max arity** | infinite (manual) | 9 (`parZip`) | **22** (`lift+ap`) / **9** (`liftA`) |
+| **Framework overhead** (arity 3) | <0.01ms | 0.02ms | **<0.01ms** |
+| **Framework overhead** (arity 9) | <0.01ms | 0.03ms | **<0.01ms** |
+| **Simple parallel** (5 x 50ms) | 50.27ms | 50.33ms | **50.31ms** |
+| **Multi-phase** (9 calls, 4 phases) | 180.85ms | 181.06ms | **180.98ms** |
+| **Validation** (4 x 40ms) | N/A | 40.32ms | **40.28ms** |
+| **Race** (50ms vs 100ms) | 100.34ms | 50.51ms | **50.40ms** |
+| **Retry** (3 attempts w/ backoff) | 120.70ms | — | **30.21ms** |
+| **timeoutRace** (primary wins) | 180.55ms | — | **30.34ms** |
+| **Max validation arity** | — | 9 | **22** |
 | **Flat multi-phase code** | No | No | **Yes** |
 | **Compile-time arg order safety** | No | No | **Yes** |
 | **Parallel error accumulation** | No | Yes (max 9) | **Yes (max 22)** |
-| **Quorum race (N-of-M)** | Manual | No | **Yes** (`raceQuorum`) |
-| **Arrow dependency** | — | Always | **Optional** (only kap-arrow) |
+| **Quorum race (N-of-M)** | Manual | No | **Yes** |
+| **Arrow dependency** | — | Always | **Optional** (kap-arrow) |
 
-> The performance story is simple: **KAP matches raw coroutines exactly.** The value proposition is not speed — it's safety, readability, and composability at zero cost.
+> **KAP matches raw coroutines in latency and overhead.** Where it pulls ahead: `race` (auto-cancel loser), `retry` (declarative schedules vs manual loops), and `timeoutRace` (parallel fallback vs sequential). The value proposition is safety, readability, and composability at zero cost.
 
 ### Virtual-Time Proofs
 
@@ -1418,7 +1677,10 @@ Source: [`ApplicativeLawsTest.kt`](kap-core/src/jvmTest/kotlin/applicative/Appli
 | **Arg order safety** | None — positional | Named args in lambda | Compile-time via currying |
 | **Dependencies** | stdlib | Arrow Core + modules | `kotlinx-coroutines-core` only (core) |
 | **Arrow dependency** | — | Always required | Optional (kap-arrow only) |
-| **JMH overhead** | 0.001ms | 0.010-0.020ms | **0.001-0.002ms** |
+| **JMH overhead** | <0.01ms | 0.02-0.03ms | **<0.01ms** |
+| **Retry** (3 attempts) | 120.70ms (manual loop) | — | **30.21ms** (Schedule) |
+| **Race** (auto-cancel loser) | 100.34ms (`select`) | 50.51ms | **50.40ms** |
+| **timeoutRace** | 180.55ms (sequential) | — | **30.34ms** (parallel) |
 
 > Side-by-side comparison: [`CoreComparisonTest.kt`](benchmarks/src/test/kotlin/applicative/CoreComparisonTest.kt) | [`ResilienceComparisonTest.kt`](benchmarks/src/test/kotlin/applicative/ResilienceComparisonTest.kt) | [`ArrowComparisonTest.kt`](benchmarks/src/test/kotlin/applicative/ArrowComparisonTest.kt)
 > JMH benchmarks: [`CoreBenchmark.kt`](benchmarks/src/jmh/kotlin/applicative/benchmarks/CoreBenchmark.kt) | [`ResilienceBenchmark.kt`](benchmarks/src/jmh/kotlin/applicative/benchmarks/ResilienceBenchmark.kt) | [`ArrowBenchmark.kt`](benchmarks/src/jmh/kotlin/applicative/benchmarks/ArrowBenchmark.kt)
@@ -1569,16 +1831,17 @@ All arities are **unified at 22** — the maximum supported by Kotlin's function
 
 ## Examples
 
-Six runnable examples in [`/examples`](examples/) covering **every module combination**:
+Seven runnable examples in [`/examples`](examples/) covering **every module combination**:
 
 | Example | Modules | What it demonstrates |
 |---|---|---|
 | **[ecommerce-checkout](examples/ecommerce-checkout/)** | `kap-core` | 11 services, 5 phases — `lift11`+`ap`+`followedBy` |
 | **[dashboard-aggregator](examples/dashboard-aggregator/)** | `kap-core` | 14-service BFF — `lift14`, type-safe at 14 args |
 | **[validated-registration](examples/validated-registration/)** | `kap-core` + `kap-arrow` | Parallel validation, error accumulation, phased validation with `flatMapV` |
-| **[ktor-integration](examples/ktor-integration/)** | `kap-core` + `kap-arrow` | Ktor HTTP server with validated endpoints |
+| **[ktor-integration](examples/ktor-integration/)** | `kap-core` + `kap-resilience` + `kap-arrow` | Ktor HTTP BFF with 10 endpoints: parallel aggregation, traverse, validation, retry/CB/bracket, raceQuorum, timeoutRace, full order pipeline — 28 integration tests |
 | **[resilient-fetcher](examples/resilient-fetcher/)** | `kap-core` + `kap-resilience` | `Schedule`, `CircuitBreaker`, `bracket`, `Resource.zip`, `timeoutRace`, `raceQuorum`, `retryOrElse`, `retryWithResult` |
 | **[full-stack-order](examples/full-stack-order/)** | `kap-core` + `kap-resilience` + `kap-arrow` | Validated input + retry/CB/bracket + `attempt`/`raceEither` — complete pipeline using all three modules |
+| **[readme-examples](examples/readme-examples/)** | `kap-core` + `kap-resilience` + `kap-arrow` | Every code example from this README — compiled and verified on every CI push |
 
 Each example's `build.gradle.kts` includes comments with the equivalent Maven coordinates for standalone use.
 
@@ -1628,7 +1891,7 @@ Push / PR to master
 ├── test              4 parallel jobs: kap-core · kap-resilience · kap-arrow · benchmarks
 ├── compile-platforms JS + LinuxX64 compilation checks
 ├── codegen-check     Regenerate all codegen, fail if out-of-date
-├── examples          publishToMavenLocal → run all 6 examples + Ktor smoke test
+├── examples          run all 7 examples + Ktor integration tests (28 testApplication cases)
 ├── benchmark         (push only) Full JMH → store results in gh-pages → historical chart
 ├── benchmark-pr      (PR only) Quick JMH → compare against baseline → block on regression
 └── ci-gate           Aggregate status for branch protection
