@@ -6,10 +6,6 @@ on:
   pull_request:
     branches: [main, master]
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: false
-
 permissions:
   contents: write
   pull-requests: write
