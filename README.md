@@ -43,11 +43,16 @@ val checkout: CheckoutResult = Async {
 
 **130ms total** (vs 460ms sequential) — verified in [`ConcurrencyProofTest.kt`](kap-core/src/jvmTest/kotlin/applicative/ConcurrencyProofTest.kt).
 
-### `::CheckoutResult` is just a function
+> All code examples on this page are compilable and verified in [`readme-examples`](examples/readme-examples/).
+
+<details>
+<summary><strong>How <code>kap</code> works — it's just functions</strong></summary>
+
+### `kap` works with any function, not just constructors
 
 A Kotlin data class constructor *is* a function. `::CheckoutResult` has type `(UserProfile, ShoppingCart, ...) -> CheckoutResult`. So `kap(::CheckoutResult)` wraps that function for parallel execution.
 
-But `kap` works with **any** function, not just constructors:
+But `kap` works with **any** function:
 
 ```kotlin
 data class Greeting(val text: String, val target: String)
@@ -77,7 +82,7 @@ val g3: String = Async {
 }
 ```
 
-Constructors are just the most common case because they give you compile-time parameter order safety for free — each slot expects a specific type, so swapping two `.with` lines is a compiler error.
+Constructors are the most common case because they give you compile-time parameter order safety for free — each slot expects a specific type, so swapping two `.with` lines is a compiler error.
 
 ### `Computation` is a description, not an execution
 
@@ -97,7 +102,7 @@ println(result) // Dashboard(user=Alice, cart=3 items, promos=SAVE20)
 
 Build computation graphs, store them, pass them around, compose them — all without triggering any side effects. Execution only happens at the `Async` boundary.
 
-> All code examples on this page are compilable and verified in [`readme-examples`](examples/readme-examples/).
+</details>
 
 ---
 
@@ -184,6 +189,103 @@ t=130ms ─── done
 
 ---
 
+## Quick Start
+
+**Pick only the modules you need:**
+
+```kotlin
+// build.gradle.kts
+dependencies {
+    // Core — the only required module (zero deps beyond coroutines)
+    implementation("io.github.damian-rafael-lattenero:kap-core:2.2.0")
+
+    // Optional: resilience patterns (Schedule, Resource, CircuitBreaker, bracket)
+    implementation("io.github.damian-rafael-lattenero:kap-resilience:2.2.0")
+
+    // Optional: Arrow integration (validated DSL, Either/Nel, raceEither, attempt)
+    implementation("io.github.damian-rafael-lattenero:kap-arrow:2.2.0")
+}
+```
+
+<details>
+<summary>Maven</summary>
+
+```xml
+<dependency>
+    <groupId>io.github.damian-rafael-lattenero</groupId>
+    <artifactId>kap-core-jvm</artifactId>
+    <version>2.2.0</version>
+</dependency>
+<!-- Optional -->
+<dependency>
+    <groupId>io.github.damian-rafael-lattenero</groupId>
+    <artifactId>kap-resilience-jvm</artifactId>
+    <version>2.2.0</version>
+</dependency>
+<dependency>
+    <groupId>io.github.damian-rafael-lattenero</groupId>
+    <artifactId>kap-arrow</artifactId>
+    <version>2.2.0</version>
+</dependency>
+```
+
+</details>
+
+```kotlin
+import applicative.*
+
+data class Dashboard(val user: String, val cart: String, val promos: String)
+
+suspend fun main() {
+    val result = Async {
+        kap(::Dashboard)
+            .with { fetchDashUser() }    // ┐ all three in parallel
+            .with { fetchDashCart() }     // │ total time = max(individual)
+            .with { fetchDashPromos() }   // ┘ not sum
+    }
+    println(result) // Dashboard(user=Alice, cart=3 items, promos=SAVE20)
+}
+```
+
+Add resilience to any branch — each module composes naturally:
+
+```kotlin
+import applicative.*
+
+val breaker = CircuitBreaker(maxFailures = 5, resetTimeout = 30.seconds)
+val retryPolicy = Schedule.times<Throwable>(3) and Schedule.exponential(10.milliseconds)
+
+val result = Async {
+    kap(::Dashboard)
+        .with(Computation { fetchDashUser() }
+            .withCircuitBreaker(breaker)
+            .retry(retryPolicy))
+        .with(Computation { fetchFromSlowApi() }
+            .timeoutRace(100.milliseconds, Computation { fetchFromCache() }))
+        .with { fetchDashPromos() }
+}
+```
+
+Add validation with Arrow types:
+
+```kotlin
+import applicative.*
+import arrow.core.Either
+import arrow.core.NonEmptyList
+
+val valid: Either<NonEmptyList<RegError>, User> = Async {
+    kapV<RegError, ValidName, ValidEmail, ValidAge, ValidUsername, User>(::User)
+        .withV { validateName("Alice") }
+        .withV { validateEmail("alice@example.com") }
+        .withV { validateAge(25) }
+        .withV { checkUsername("alice") }
+}
+// 3 fail? -> Either.Left(NonEmptyList(NameTooShort, InvalidEmail, AgeTooLow))
+// All pass? -> Either.Right(User(...))
+```
+
+---
+
 ## Three Primitives — That's the Whole Model
 
 | Primitive | What it does | Think of it as |
@@ -247,7 +349,8 @@ t=80ms  ─── PersonalizedDashboard ready
 
 **This is the classic BFF pattern:** fetch user context first, then fan out personalized calls that depend on that context. Checkout uses `.followedBy` for barriers — phase 2 doesn't need phase 1's *values*, just needs it to finish. But in a BFF, phase 2 **uses** phase 1's results to decide what to fetch next.
 
-**Raw Coroutines — three separate `coroutineScope` blocks, manual variable threading:**
+<details>
+<summary><strong>Raw Coroutines comparison</strong> — three separate <code>coroutineScope</code> blocks, manual variable threading</summary>
 
 ```kotlin
 val userId = "user-42"
@@ -274,6 +377,8 @@ val dashboard = coroutineScope {
 }
 // 3 separate coroutineScope blocks. ctx and enriched threaded manually.
 ```
+
+</details>
 
 **KAP — single expression, dependencies are the structure:**
 
@@ -363,79 +468,6 @@ Two phases, zero `await()`, full structured concurrency. If `fetchSponsored` fai
 
 ---
 
-## Quick Start
-
-**Pick only the modules you need:**
-
-```kotlin
-// build.gradle.kts
-dependencies {
-    // Core — the only required module (zero deps beyond coroutines)
-    implementation("io.github.damian-rafael-lattenero:kap-core:2.2.0")
-
-    // Optional: resilience patterns (Schedule, Resource, CircuitBreaker, bracket)
-    implementation("io.github.damian-rafael-lattenero:kap-resilience:2.2.0")
-
-    // Optional: Arrow integration (validated DSL, Either/Nel, raceEither, attempt)
-    implementation("io.github.damian-rafael-lattenero:kap-arrow:2.2.0")
-}
-```
-
-```kotlin
-import applicative.*
-
-data class Dashboard(val user: String, val cart: String, val promos: String)
-
-suspend fun main() {
-    val result = Async {
-        kap(::Dashboard)
-            .with { fetchDashUser() }    // ┐ all three in parallel
-            .with { fetchDashCart() }     // │ total time = max(individual)
-            .with { fetchDashPromos() }   // ┘ not sum
-    }
-    println(result) // Dashboard(user=Alice, cart=3 items, promos=SAVE20)
-}
-```
-
-Add resilience to any branch — each module composes naturally:
-
-```kotlin
-import applicative.*
-
-val breaker = CircuitBreaker(maxFailures = 5, resetTimeout = 30.seconds)
-val retryPolicy = Schedule.times<Throwable>(3) and Schedule.exponential(10.milliseconds)
-
-val result = Async {
-    kap(::Dashboard)
-        .with(Computation { fetchDashUser() }
-            .withCircuitBreaker(breaker)
-            .retry(retryPolicy))
-        .with(Computation { fetchFromSlowApi() }
-            .timeoutRace(100.milliseconds, Computation { fetchFromCache() }))
-        .with { fetchDashPromos() }
-}
-```
-
-Add validation with Arrow types:
-
-```kotlin
-import applicative.*
-import arrow.core.Either
-import arrow.core.NonEmptyList
-
-val valid: Either<NonEmptyList<RegError>, User> = Async {
-    kapV<RegError, ValidName, ValidEmail, ValidAge, ValidUsername, User>(::User)
-        .withV { validateName("Alice") }
-        .withV { validateEmail("alice@example.com") }
-        .withV { validateAge(25) }
-        .withV { checkUsername("alice") }
-}
-// 3 fail? -> Either.Left(NonEmptyList(NameTooShort, InvalidEmail, AgeTooLow))
-// All pass? -> Either.Right(User(...))
-```
-
----
-
 ## When to Use (and When Not To)
 
 **KAP shines when:**
@@ -498,21 +530,17 @@ All styles are parallel by default. `kap+with` gives stronger type safety; `comb
 ## Module Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        kap-arrow                            │
-│  zipV · withV · validated {} · attempt() · raceEither       │
-│  Either/Nel bridges · accumulate {} · Validated<E,A>        │
-│          depends on: kap-core + Arrow Core (JVM only)       │
-└────────────────────────────┬────────────────────────────────┘
-                             │
-┌────────────────────────────┴────────────────────────────────┐
-│                      kap-resilience                         │
-│  Schedule · CircuitBreaker · Resource · bracket             │
-│  raceQuorum · timeoutRace · retry(schedule) · retryOrElse   │
-│               depends on: kap-core                          │
-└────────────────────────────┬────────────────────────────────┘
-                             │
-┌────────────────────────────┴────────────────────────────────┐
+┌──────────────────────────────┐   ┌──────────────────────────────┐
+│          kap-arrow           │   │       kap-resilience         │
+│  zipV · withV · validated {} │   │  Schedule · CircuitBreaker   │
+│  attempt() · raceEither      │   │  Resource · bracket          │
+│  Either/Nel · accumulate {}  │   │  raceQuorum · timeoutRace    │
+│  + Arrow Core (JVM only)     │   │  retry(schedule) · retryOrElse│
+└──────────────┬───────────────┘   └──────────────┬───────────────┘
+               │                                  │
+               └──────────────┬───────────────────┘
+                              │
+┌─────────────────────────────┴───────────────────────────────┐
 │                        kap-core                             │
 │  Computation · with · followedBy · flatMap · kap · combine  │
 │  race · traverse · memoize · timeout · recover · retry(n)   │
@@ -522,6 +550,22 @@ All styles are parallel by default. `kap+with` gives stronger type safety; `comb
 ```
 
 Non-Arrow projects get a lean DSL with zero Arrow types in auto-complete. Arrow users add `kap-arrow` for native `Either`/`NonEmptyList` integration.
+
+---
+
+## Coming from Arrow?
+
+`kap-arrow` uses Arrow's **native types** directly — `arrow.core.Either` and `arrow.core.NonEmptyList`. No wrapper types, no adapters.
+
+| Arrow | KAP | Module |
+|---|---|---|
+| `parZip(f1, f2, ...) { }` | `combine(f1, f2, f3) { }` or `kap(::R).with{f1}.with{f2}` | `kap-core` |
+| Nested `parZip` for phases | `.followedBy { }` | `kap-core` |
+| `zipOrAccumulate(f1, ...) { }` | `zipV(f1, ...) { }` — up to 22 | `kap-arrow` |
+| `either { ... }` | `validated { }` / `accumulate { }` | `kap-arrow` |
+| `Resource({ }, { })` | `Resource({ }, { })` — identical API | `kap-resilience` |
+| `Schedule.times(n)` | `Schedule.times(n)` — identical API | `kap-resilience` |
+| `parMap(concurrency) { }` | `traverse(concurrency) { }` | `kap-core` |
 
 ---
 
@@ -973,6 +1017,18 @@ Need a guard (not an exception)?
 
 ---
 
+## How It Works
+
+**Step 1: Wrapping.** `kap(::CheckoutResult)` takes your 11-parameter constructor and wraps it into a typed pipeline where each `.with` fills the next slot: slot 1 expects `UserProfile`, slot 2 expects `ShoppingCart`, and so on. This is wrapped in a `Computation` — a lazy description that hasn't executed yet.
+
+**Step 2: Parallel fork.** Each `.with { fetchX() }` fills the next slot in the pipeline. The lambda launches as `async` in the current `CoroutineScope`, while the pipeline spine stays inline. N `.with` calls produce N concurrent coroutines with O(N) stack depth.
+
+**Step 3: Barrier join.** `.followedBy { }` awaits all pending parallel work before continuing. `.flatMap` does the same but passes the result value into the next phase.
+
+The library knows at build time that `.with` branches are independent and can run concurrently. `flatMap` forces sequencing because later steps depend on earlier values. Your code shape directly encodes the dependency graph.
+
+---
+
 ## Empirical Data
 
 All claims backed by **119 JMH benchmarks** (2 forks x 5 measurement iterations each) and deterministic virtual-time proofs. No flaky timing assertions — `runTest` + `currentTime` gives provably correct results.
@@ -1015,34 +1071,6 @@ Benchmarks: [`CoreBenchmark.kt`](benchmarks/src/jmh/kotlin/applicative/benchmark
 Comparison tests: [`CoreComparisonTest.kt`](benchmarks/src/test/kotlin/applicative/CoreComparisonTest.kt) | [`ResilienceComparisonTest.kt`](benchmarks/src/test/kotlin/applicative/ResilienceComparisonTest.kt) | [`ArrowComparisonTest.kt`](benchmarks/src/test/kotlin/applicative/ArrowComparisonTest.kt).
 
 </details>
-
----
-
-## How It Works
-
-**Step 1: Wrapping.** `kap(::CheckoutResult)` takes your 11-parameter constructor and wraps it into a typed pipeline where each `.with` fills the next slot: slot 1 expects `UserProfile`, slot 2 expects `ShoppingCart`, and so on. This is wrapped in a `Computation` — a lazy description that hasn't executed yet.
-
-**Step 2: Parallel fork.** Each `.with { fetchX() }` fills the next slot in the pipeline. The lambda launches as `async` in the current `CoroutineScope`, while the pipeline spine stays inline. N `.with` calls produce N concurrent coroutines with O(N) stack depth.
-
-**Step 3: Barrier join.** `.followedBy { }` awaits all pending parallel work before continuing. `.flatMap` does the same but passes the result value into the next phase.
-
-The library knows at build time that `.with` branches are independent and can run concurrently. `flatMap` forces sequencing because later steps depend on earlier values. Your code shape directly encodes the dependency graph.
-
----
-
-## Coming from Arrow?
-
-`kap-arrow` uses Arrow's **native types** directly — `arrow.core.Either` and `arrow.core.NonEmptyList`. No wrapper types, no adapters.
-
-| Arrow | KAP | Module |
-|---|---|---|
-| `parZip(f1, f2, ...) { }` | `combine(f1, f2, f3) { }` or `kap(::R).with{f1}.with{f2}` | `kap-core` |
-| Nested `parZip` for phases | `.followedBy { }` | `kap-core` |
-| `zipOrAccumulate(f1, ...) { }` | `zipV(f1, ...) { }` — up to 22 | `kap-arrow` |
-| `either { ... }` | `validated { }` / `accumulate { }` | `kap-arrow` |
-| `Resource({ }, { })` | `Resource({ }, { })` — identical API | `kap-resilience` |
-| `Schedule.times(n)` | `Schedule.times(n)` — identical API | `kap-resilience` |
-| `parMap(concurrency) { }` | `traverse(concurrency) { }` | `kap-core` |
 
 ---
 
