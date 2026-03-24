@@ -598,7 +598,7 @@ suspend fun <A> Computation<A>.await(): A =
 
 /**
  * Wraps this computation's outcome in [Result], catching all non-cancellation
- * exceptions without propagating them to siblings in an [ap] chain.
+ * exceptions without propagating them to siblings in a [with] chain.
  *
  * Uses Kotlin's built-in [Result] type — ideal when you want partial-failure
  * tolerance in a parallel chain:

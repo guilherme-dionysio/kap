@@ -184,7 +184,7 @@ class CombinatorsTest {
     }
 
     @Test
-    fun `retry composes with lift+ap`() = runTest {
+    fun `retry composes with kap+with`() = runTest {
         var attempts = 0
         val retryable = Computation<String> {
             attempts++

@@ -240,13 +240,13 @@ class BracketTest {
     }
 
     // ════════════════════════════════════════════════════════════════════════
-    // 8. bracket with lift+ap - real multi-phase resource flow
+    // 8. bracket with kap+with - real multi-phase resource flow
     //    Acquire 3 connections in parallel, use them, verify all 3 released
     //    even when phase 2 fails
     // ════════════════════════════════════════════════════════════════════════
 
     @Test
-    fun `bracket with lift+ap - real multi-phase resource flow`() = runTest {
+    fun `bracket with kap+with - real multi-phase resource flow`() = runTest {
         val releases = CopyOnWriteArrayList<String>()
         val acquireOrder = CopyOnWriteArrayList<String>()
 

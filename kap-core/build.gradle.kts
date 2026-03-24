@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "io.github.damian-rafael-lattenero"
-version = "2.1.0"
+version = "2.2.0"
 
 repositories {
     mavenCentral()
@@ -113,16 +113,16 @@ tasks.register("generateCurry") {
     }
 }
 
-tasks.register("generateLift") {
-    description = "Regenerates src/commonMain/kotlin/applicative/Lift.kt"
+tasks.register("generateKap") {
+    description = "Regenerates src/commonMain/kotlin/applicative/Kap.kt"
     group = "codegen"
 
     val maxArity = 22
-    val outputFile = file("src/commonMain/kotlin/applicative/Lift.kt")
+    val outputFile = file("src/commonMain/kotlin/applicative/Kap.kt")
     outputs.file(outputFile)
 
     doLast {
-        fun generateLift(n: Int): String {
+        fun generateKap(n: Int): String {
             val typeParams = (1..n).joinToString(", ") { "P$it" }
             val paramType = (1..n).joinToString(", ") { "P$it" }
             val curriedType = (1..n).joinToString(" -> ") { "(P$it)" } + " -> R"
@@ -132,7 +132,7 @@ tasks.register("generateLift") {
         val header = buildString {
             appendLine("// ┌──────────────────────────────────────────────────────────────────────┐")
             appendLine("// │  AUTO-GENERATED — do not edit by hand.                               │")
-            appendLine("// │  Run: ./gradlew :kap-core:generateLift                               │")
+            appendLine("// │  Run: ./gradlew :kap-core:generateKap                                │")
             appendLine("// └──────────────────────────────────────────────────────────────────────┘")
             appendLine("package applicative")
             appendLine()
@@ -143,18 +143,18 @@ tasks.register("generateLift") {
             appendLine("/** Curries [f] and wraps it as a [Computation], ready for [with] chains. */")
         }
 
-        val body = (2..maxArity).joinToString("\n\n") { generateLift(it) }
+        val body = (2..maxArity).joinToString("\n\n") { generateKap(it) }
         outputFile.writeText("$header\n$body\n")
         println("Generated ${outputFile.path} (arities 2..$maxArity)")
     }
 }
 
-tasks.register("generateZipMapN") {
-    description = "Regenerates src/commonMain/kotlin/applicative/ZipOverloads.kt"
+tasks.register("generateZipCombine") {
+    description = "Regenerates src/commonMain/kotlin/applicative/ZipCombineOverloads.kt"
     group = "codegen"
 
     val maxArity = 22
-    val outputFile = file("src/commonMain/kotlin/applicative/ZipOverloads.kt")
+    val outputFile = file("src/commonMain/kotlin/applicative/ZipCombineOverloads.kt")
     outputs.file(outputFile)
 
     doLast {
@@ -194,7 +194,7 @@ $params,
         val header = buildString {
             appendLine("// ┌──────────────────────────────────────────────────────────────────────┐")
             appendLine("// │  AUTO-GENERATED — do not edit by hand.                               │")
-            appendLine("// │  Run: ./gradlew :kap-core:generateZipMapN                            │")
+            appendLine("// │  Run: ./gradlew :kap-core:generateZipCombine                          │")
             appendLine("// └──────────────────────────────────────────────────────────────────────┘")
             appendLine("package applicative")
             appendLine()
@@ -217,7 +217,7 @@ $params,
 }
 
 tasks.register("generateAll") {
-    dependsOn("generateCurry", "generateLift", "generateZipMapN")
+    dependsOn("generateCurry", "generateKap", "generateZipCombine")
     description = "Regenerates all codegen files for kap-core"
     group = "codegen"
 }

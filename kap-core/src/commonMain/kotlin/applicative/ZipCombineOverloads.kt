@@ -1,6 +1,6 @@
 // ┌──────────────────────────────────────────────────────────────────────┐
 // │  AUTO-GENERATED — do not edit by hand.                               │
-// │  Run: ./gradlew :kap-core:generateZipMapN                            │
+// │  Run: ./gradlew :kap-core:generateZipCombine                          │
 // └──────────────────────────────────────────────────────────────────────┘
 package applicative
 

@@ -37,7 +37,7 @@ fun <A> Flow<A>.firstAsComputation(): Computation<A> = Computation {
 /**
  * Wraps a suspend lambda into an explicit [Computation].
  *
- * This is the same conversion that [ap]'s lambda overload does internally,
+ * This is the same conversion that [with]'s lambda overload does internally,
  * but useful when you need a `Computation` value to pass around.
  */
 fun <A> (suspend () -> A).toComputation(): Computation<A> = Computation {

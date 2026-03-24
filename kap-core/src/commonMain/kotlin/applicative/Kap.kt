@@ -1,6 +1,6 @@
 // ┌──────────────────────────────────────────────────────────────────────┐
 // │  AUTO-GENERATED — do not edit by hand.                               │
-// │  Run: ./gradlew :kap-core:generateLift                               │
+// │  Run: ./gradlew :kap-core:generateKap                                │
 // └──────────────────────────────────────────────────────────────────────┘
 package applicative
 

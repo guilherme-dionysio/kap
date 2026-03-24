@@ -28,7 +28,7 @@ class InteropTest {
     }
 
     @Test
-    fun `Deferred toComputation composes with lift+ap`() = runTest {
+    fun `Deferred toComputation composes with kap+with`() = runTest {
         val deferredA = CompletableDeferred("hello")
         val deferredB = CompletableDeferred("world")
 
@@ -65,7 +65,7 @@ class InteropTest {
     }
 
     @Test
-    fun `Flow firstAsComputation composes with lift+ap`() = runTest {
+    fun `Flow firstAsComputation composes with kap+with`() = runTest {
         val result = Async {
             kap { a: String, b: Int -> "$a=$b" }
                 .with { with(flowOf("count").firstAsComputation()) { execute() } }
@@ -86,7 +86,7 @@ class InteropTest {
     }
 
     @Test
-    fun `suspend lambda toComputation composes with lift+ap`() = runTest {
+    fun `suspend lambda toComputation composes with kap+with`() = runTest {
         val fetchUser: suspend () -> String = { "Alice" }
         val fetchAge: suspend () -> Int = { 30 }
 

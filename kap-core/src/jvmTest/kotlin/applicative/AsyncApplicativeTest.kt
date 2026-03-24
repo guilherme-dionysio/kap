@@ -16,12 +16,12 @@ class AsyncApplicativeTest {
     // ════════════════════════════════════════════════════════════════════════
     // SECTION 1: CONCURRENCY PROOFS
     //
-    //   Barrier-based tests that PROVE lift+ap runs computations concurrently.
+    //   Barrier-based tests that PROVE kap+with runs computations concurrently.
     //   If the wrong execution model were used, these tests would deadlock.
     // ════════════════════════════════════════════════════════════════════════
 
     @Test
-    fun `lift+ap runs both sides concurrently - barrier proof`() = runTest {
+    fun `kap+with runs both sides concurrently - barrier proof`() = runTest {
         val latchA = CompletableDeferred<Unit>()
         val latchB = CompletableDeferred<Unit>()
 
@@ -45,7 +45,7 @@ class AsyncApplicativeTest {
     }
 
     @Test
-    fun `lift+ap with three computations all run concurrently - barrier proof`() = runTest {
+    fun `kap+with with three computations all run concurrently - barrier proof`() = runTest {
         val latches = (0 until 3).map { CompletableDeferred<Unit>() }
 
         val result = Async {
@@ -96,7 +96,7 @@ class AsyncApplicativeTest {
     }
 
     @Test
-    fun `seven parallel lift+ap calls all run concurrently - barrier proof`() = runTest {
+    fun `seven parallel kap+with calls all run concurrently - barrier proof`() = runTest {
         val latches = (0 until 7).map { CompletableDeferred<Unit>() }
 
         val result = Async {
@@ -115,7 +115,7 @@ class AsyncApplicativeTest {
     }
 
     @Test
-    fun `thirteen parallel lift+ap calls - barrier proof`() = runTest {
+    fun `thirteen parallel kap+with calls - barrier proof`() = runTest {
         val latches = (0 until 13).map { CompletableDeferred<Unit>() }
 
         val result = Async {
@@ -141,14 +141,14 @@ class AsyncApplicativeTest {
     }
 
     // ════════════════════════════════════════════════════════════════════════
-    // SECTION 2: MIXED COMPOSITION (lift+ap+followedBy)
+    // SECTION 2: MIXED COMPOSITION (kap+with+followedBy)
     //
     //   Complex dependency graphs with interleaved parallel and sequential.
     //   followedBy enforces that earlier phases complete before the next begins.
     // ════════════════════════════════════════════════════════════════════════
 
     @Test
-    fun `lift+ap+followedBy - ordering is correct`() = runTest {
+    fun `kap+with+followedBy - ordering is correct`() = runTest {
         val order = mutableListOf<String>()
 
         val result = Async {
@@ -174,7 +174,7 @@ class AsyncApplicativeTest {
     }
 
     @Test
-    fun `e-commerce checkout - four phases with lift+ap+followedBy`() = runTest {
+    fun `e-commerce checkout - four phases with kap+with+followedBy`() = runTest {
         data class CheckoutSummary(
             val user: UserProfile,
             val cart: ShoppingCart,
@@ -230,7 +230,7 @@ class AsyncApplicativeTest {
     // ════════════════════════════════════════════════════════════════════════
 
     @Test
-    fun `lift+ap with nullable values via optional`() = runTest {
+    fun `kap+with with nullable values via optional`() = runTest {
         val absent: (suspend () -> String)? = null
         val present: (suspend () -> String)? = { "present" }
 
@@ -265,7 +265,7 @@ class AsyncApplicativeTest {
     // ════════════════════════════════════════════════════════════════════════
 
     @Test
-    fun `exception in lift+ap propagates through structured concurrency`() = runTest {
+    fun `exception in kap+with propagates through structured concurrency`() = runTest {
         val result = runCatching {
             Async {
                 kap { a: String, b: String, c: String -> "$a|$b|$c" }
@@ -281,7 +281,7 @@ class AsyncApplicativeTest {
     }
 
     @Test
-    fun `structured concurrency cancels siblings when one lift+ap branch fails`() = runTest {
+    fun `structured concurrency cancels siblings when one kap+with branch fails`() = runTest {
         val siblingStarted = CompletableDeferred<Unit>()
         val siblingCancelled = CompletableDeferred<Boolean>()
 
@@ -364,7 +364,7 @@ class AsyncApplicativeTest {
     }
 
     @Test
-    fun `flatMap mixes with lift+ap - dependent fanout`() = runTest {
+    fun `flatMap mixes with kap+with - dependent fanout`() = runTest {
         val latchB = CompletableDeferred<Unit>()
         val latchC = CompletableDeferred<Unit>()
 

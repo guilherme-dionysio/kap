@@ -6,7 +6,7 @@ import kotlinx.coroutines.CoroutineScope
  * Scope for the [computation] builder, providing [bind] for sequential
  * monadic composition inside a [Computation].
  *
- * This is the sequential counterpart to `lift+ap` — use it when later
+ * This is the sequential counterpart to `kap+with` — use it when later
  * steps depend on earlier values:
  *
  * ```
@@ -46,7 +46,7 @@ class ComputationScope @PublishedApi internal constructor(
 /**
  * Builds a [Computation] using imperative syntax with [ComputationScope.bind].
  *
- * Each [bind] call executes its computation sequentially — use `lift+ap`
+ * Each [bind] call executes its computation sequentially — use `kap+with`
  * when branches are independent and can run in parallel.
  */
 inline fun <A> computation(crossinline block: suspend ComputationScope.() -> A): Computation<A> =

@@ -47,7 +47,7 @@ class ContextTest {
     }
 
     @Test
-    fun `on composes with lift+ap - each branch can have different context`() = runTest {
+    fun `on composes with kap+with - each branch can have different context`() = runTest {
         val latchA = CompletableDeferred<Unit>()
         val latchB = CompletableDeferred<Unit>()
 

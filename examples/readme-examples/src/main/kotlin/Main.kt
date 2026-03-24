@@ -920,6 +920,42 @@ suspend fun executionModel() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  Reordered execution: execute params out of constructor order
+// ═══════════════════════════════════════════════════════════════════════
+
+data class Page(val a: String, val b: String, val c: String, val d: String)
+
+suspend fun fetchParamA(): String { delay(30); return "A-val" }
+suspend fun fetchParamB(): String { delay(20); return "B-val" }
+suspend fun fetchParamC(): String { delay(40); return "C-val" }
+suspend fun fetchParamD(): String { delay(10); return "D-val" }
+
+suspend fun reorderedWithoutBarrier() {
+    println("=== Reordered: No barrier (all parallel, assemble freely) ===\n")
+
+    val result = Async {
+        combine(
+            pair({ fetchParamC() }, { fetchParamD() }),
+            pair({ fetchParamA() }, { fetchParamB() }),
+        ) { (c, d), (a, b) -> Page(a, b, c, d) }
+    }
+    println("  result: $result\n")
+}
+
+suspend fun reorderedWithBarrier() {
+    println("=== Reordered: With barrier (phase 1 -> barrier -> phase 2) ===\n")
+
+    val result = Async {
+        computation {
+            val (c, d) = pair({ fetchParamC() }, { fetchParamD() }).bind()
+            val (a, b) = pair({ fetchParamA() }, { fetchParamB() }).bind()
+            Page(a, b, c, d)
+        }
+    }
+    println("  result: $result\n")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  Main — runs every example
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -970,6 +1006,10 @@ suspend fun main() {
     featureFallbacks()
     featureComputationBuilder()
     executionModel()
+
+    // Reordered execution
+    reorderedWithoutBarrier()
+    reorderedWithBarrier()
 
     println("All README examples passed!")
 }
