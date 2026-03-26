@@ -3,9 +3,6 @@ plugins {
     id("com.vanniktech.maven.publish")
 }
 
-group = "io.github.damian-rafael-lattenero"
-version = "2.2.0"
-
 repositories {
     mavenCentral()
 }

@@ -6,10 +6,10 @@ plugins {
 }
 
 allprojects {
+    group = "io.github.damian-rafael-lattenero"
+    version = "2.3.1"
+
     repositories {
         mavenCentral()
     }
 }
-
-group = "io.github.damian-rafael-lattenero"
-version = "2.3.0"
