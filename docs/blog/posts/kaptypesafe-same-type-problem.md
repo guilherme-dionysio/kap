@@ -53,9 +53,9 @@ KSP generates:
 
 ```kotlin
 // Distinct wrapper types — each String parameter gets its own type
-@JvmInline value class UserFirstName(val value: String)
-@JvmInline value class UserLastName(val value: String)
-@JvmInline value class UserAge(val value: Int)
+data class UserFirstName(val value: String)
+data class UserLastName(val value: String)
+data class UserAge(val value: Int)
 
 // Type-safe kap function
 fun kapSafe(f: (String, String, Int) -> User): Kap<(UserFirstName) -> (UserLastName) -> (UserAge) -> User>
@@ -77,9 +77,11 @@ kapSafe(::User)
 
 Swap `.toFirstName()` and `.toLastName()`? The compiler rejects it. `UserFirstName` is not `UserLastName`. Done.
 
-## Zero runtime overhead
+## Multiplatform by design
 
-The wrapper types are `@JvmInline value class` — the Kotlin compiler erases them at runtime. No boxing, no allocation, no performance cost. It's purely a compile-time check that disappears in the bytecode.
+The generated wrappers are `data class` — they work on every Kotlin target: JVM, JS, WASM, Native, iOS, macOS. The KSP processor runs on JVM during compilation, but the code it generates compiles everywhere. No platform restrictions.
+
+The overhead is one small object per wrapper — negligible when you're wrapping network calls that take 50ms+. The type safety is what matters, and it's enforced at compile time.
 
 ## Works on functions too
 
@@ -120,7 +122,7 @@ The "newtype" pattern is well-known. Haskell, Rust, Scala — everyone recommend
 2. **The generated code needs to integrate with a specific API** — it's not a general-purpose tool, it needs to know about `Kap` and `.with`
 3. **KSP2 just became stable** — the tooling wasn't ready until recently
 
-KAP is (as far as we know) the first Kotlin framework to ship this. One annotation, zero boilerplate, compile-time enforcement.
+KAP is (as far as we know) the first Kotlin framework to ship this. One annotation, zero boilerplate, compile-time enforcement, full multiplatform support.
 
 ## The design journey
 
@@ -132,6 +134,7 @@ Instead of hiding it, we:
 2. Explored solutions (value classes, compiler plugins, KSP)
 3. Built the simplest thing that works (`@KapTypeSafe` + KSP2)
 4. Made it ergonomic (`.toFirstName()` extensions, `prefix` for collisions)
+5. Chose `data class` over `@JvmInline value class` for full multiplatform compatibility
 
 Each step was driven by one question: "what would make the developer's life easier?"
 

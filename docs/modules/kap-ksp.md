@@ -38,16 +38,16 @@ This is the same problem raw coroutines and Arrow have. No type system can catch
 
 ## The Solution
 
-`@KapTypeSafe` generates distinct value class wrappers automatically:
+`@KapTypeSafe` generates distinct wrapper types automatically:
 
 ```kotlin
 @KapTypeSafe
 data class User(val firstName: String, val lastName: String, val age: Int)
 
 // KSP generates:
-// @JvmInline value class UserFirstName(val value: String)
-// @JvmInline value class UserLastName(val value: String)
-// @JvmInline value class UserAge(val value: Int)
+// data class UserFirstName(val value: String)
+// data class UserLastName(val value: String)
+// data class UserAge(val value: Int)
 // fun kapSafe(f: (String, String, Int) -> User): Kap<(UserFirstName) -> (UserLastName) -> (UserAge) -> User>
 // fun String.toFirstName(): UserFirstName
 // fun String.toLastName(): UserLastName
@@ -63,7 +63,7 @@ kapSafe(::User)
     .with { fetchAge().toAge() }               // UserAge
 ```
 
-**Zero runtime overhead** — value classes are inlined by the Kotlin compiler.
+**Multiplatform compatible** — uses `data class` wrappers that compile on every Kotlin target (JVM, JS, WASM, Native, iOS, macOS). Minimal overhead — one small object per wrapper, negligible compared to the network calls being wrapped.
 
 ---
 
@@ -128,7 +128,7 @@ For each `@KapTypeSafe` annotated class or function:
 
 | Generated | Example |
 |---|---|
-| Value class per param | `@JvmInline value class UserFirstName(val value: String)` |
+| Data class per param | `data class UserFirstName(val value: String)` |
 | `kapSafe` function | `fun kapSafe(f: (String, String, Int) -> User): Kap<(UserFirstName) -> ...>` |
 | Extension per param | `fun String.toFirstName(): UserFirstName` |
 
